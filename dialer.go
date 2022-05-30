@@ -94,7 +94,8 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	}
 
 	// Create a datachannel with label 'data'
-	dataChannel, err := peerConnection.CreateDataChannel("data_"+address, nil)
+	channelName := fmt.Sprintf("data_%s_%d", address, time.Now().Unix())
+	dataChannel, err := peerConnection.CreateDataChannel(channelName, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +109,10 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	// Set ICE Candidate handler. As soon as a PeerConnection has gathered a candidate
 	// send it to the other peer
 	peerConnection.OnICECandidate(func(i *webrtc.ICECandidate) {
-		// Send ICE Candidate via Websocket/HTTP/$X to remote peer
+	})
+
+	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
 	})
 
 	// Register channel opening handling
@@ -120,7 +124,6 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 		if dErr != nil {
 			panic(dErr)
 		}
-
 		incomingConn <- rwconn.NewConn(raw, raw, rwconn.SetWriteDelay(500*time.Millisecond))
 	})
 
@@ -179,7 +182,6 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 			panic(err)
 		}
 	}()
-
 	select {
 	case conn := <-incomingConn:
 		return conn, nil

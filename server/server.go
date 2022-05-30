@@ -9,6 +9,8 @@ import (
 	"net/http/httputil"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/pion/p2p"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -74,6 +76,15 @@ func main() {
 
 	}
 
+	mux := http.NewServeMux()
+	mux.Handle("/", proxy)
+	mux.HandleFunc("/test", func(w http.ResponseWriter, req *http.Request) {
+		fmt.Println("received request")
+		time.Sleep(500 * time.Millisecond)
+		w.Write([]byte(strings.Repeat("a", 1724)))
+
+	})
+
 	fmt.Print("Press 'Enter' when both processes have started")
 	if _, err := bufio.NewReader(os.Stdin).ReadBytes('\n'); err != nil {
 		panic(err)
@@ -84,6 +95,6 @@ func main() {
 		panic(err)
 	}
 	defer ln.Close()
-	log.Fatal(http.Serve(ln, proxy))
+	log.Fatal(http.Serve(ln, mux))
 
 }

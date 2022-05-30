@@ -4,8 +4,9 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 
 	"github.com/pion/p2p"
@@ -31,22 +32,23 @@ func main() {
 
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.DialContext = d.Dial
-	client := http.Client{Transport: tr}
 
-	request, err := http.NewRequest("GET", "http://server_host/api/v1/namespaces/default/pods", nil)
-	if err != nil {
-		panic(err)
+	target := &url.URL{Host: "server_host", Scheme: "http"}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Transport = tr
+	proxy.Director = func(req *http.Request) {
+		req.Host = target.Host
+		originalDirector(req)
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		fmt.Println(resp)
+		return nil
+
 	}
 
-	response, err := client.Do(request)
-	if err != nil {
-		panic(err)
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("BODY --------------->", string(body))
+	mux := http.NewServeMux()
+	mux.Handle("/", proxy)
+	http.ListenAndServe(":8080", mux)
 }
