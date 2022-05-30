@@ -99,7 +99,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		}
-		fmt.Println("sending candidate to ", id)
+		log.Println("sending candidate to ", id)
 		_, err := fmt.Fprintf(w, "%s\n", c)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -133,7 +133,7 @@ func negotiateHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func turnProxy(w http.ResponseWriter, r *http.Request) {
-	log.Println("connect request received")
+	log.Println("connect request received for turn")
 	dest_conn, err := net.DialTimeout("tcp", turnAddress, 10*time.Second)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -151,11 +151,14 @@ func turnProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	go transfer(dest_conn, client_conn)
 	go transfer(client_conn, dest_conn)
+	log.Println("connect request for turn working")
+
 }
 func transfer(destination io.WriteCloser, source io.ReadCloser) {
 	defer destination.Close()
 	defer source.Close()
 	io.Copy(destination, source)
+	log.Println("connect request for turn finished")
 }
 
 // assume messages are id: string and offer: (json with the webrtc offer)
@@ -172,7 +175,7 @@ func main() {
 	// Create a TCP listener to pass into pion/turn
 	// pion/turn itself doesn't allocate any TCP listeners, but lets the user pass them in
 	// this allows us to add logging, storage or modify inbound/outbound traffic
-	tcpListener, err := net.Listen("tcp4", "0.0.0.0:0")
+	tcpListener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		log.Panicf("Failed to create TURN server listener: %s", err)
 	}

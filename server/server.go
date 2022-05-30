@@ -5,23 +5,74 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
+	"net/http"
+	"net/http/httputil"
 	"os"
-	"time"
+	"path/filepath"
 
 	"github.com/pion/p2p"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
+	"k8s.io/klog/v2"
 )
-
-const messageSize = 1024
 
 var (
 	remote string // remote url
 )
 
 func main() {
+	var kubeconfig *string
+	if home := homedir.HomeDir(); home != "" {
+		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+	} else {
+		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	}
 
 	flag.StringVar(&remote, "remote", "http://localhost:9001", "signal server url")
 	flag.Parse()
+
+	// validation
+	var config *rest.Config
+	var err error
+	if *kubeconfig != "" {
+		// use the current context in kubeconfig
+		config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
+		if err != nil {
+			panic(err.Error())
+		}
+	} else {
+		// creates the in-cluster config
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+	target, _, err := rest.DefaultServerURL(config.Host, "", schema.GroupVersion{}, true)
+	if err != nil {
+		panic(err)
+	}
+	// target.Path = pathPrefix
+	// target.Path = "/"
+	config.NextProtos = []string{"http/1.1"}
+	transport, err := rest.TransportFor(config)
+	if err != nil {
+		panic(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Transport = transport
+	proxy.Director = func(req *http.Request) {
+		req.Host = target.Host
+		originalDirector(req)
+		klog.Infof("Forwarded request %s", req.URL)
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		fmt.Println(resp)
+		return nil
+
+	}
 
 	fmt.Print("Press 'Enter' when both processes have started")
 	if _, err := bufio.NewReader(os.Stdin).ReadBytes('\n'); err != nil {
@@ -33,39 +84,6 @@ func main() {
 		panic(err)
 	}
 	defer ln.Close()
-	for {
-		// Listen for an incoming connection.
-		conn, err := ln.Accept()
-		if err != nil {
-			fmt.Println("Error accepting: ", err.Error())
-			os.Exit(1)
-		}
-		log.Println("Received connection")
-		// Handle connections in a new goroutine.
-		go handleConn(conn)
-	}
+	log.Fatal(http.Serve(ln, proxy))
 
-}
-
-func handleConn(conn net.Conn) {
-	go func() {
-		for range time.NewTicker(5 * time.Second).C {
-			message := "test message from server"
-			_, err := conn.Write([]byte(message))
-			if err != nil {
-				panic(err)
-			}
-		}
-	}()
-
-	for {
-		buffer := make([]byte, messageSize)
-		n, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Println("Datachannel closed; Exit the readloop:", err)
-			continue
-		}
-		fmt.Printf("Server Message from DataChannel: %s\n", string(buffer[:n]))
-
-	}
 }

@@ -2,18 +2,14 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"flag"
 	"fmt"
-	"log"
-	"net"
+	"io/ioutil"
+	"net/http"
 	"os"
-	"time"
 
 	"github.com/pion/p2p"
 )
-
-const messageSize = 1024
 
 var (
 	remote string // remote url
@@ -33,35 +29,24 @@ func main() {
 		panic(err)
 	}
 
-	c, err := d.Dial(context.TODO(), "", "server_host")
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = d.Dial
+	client := http.Client{Transport: tr}
+
+	request, err := http.NewRequest("GET", "http://server_host/api/v1/namespaces/default/pods", nil)
 	if err != nil {
 		panic(err)
 	}
-	log.Println("Dialed connection")
-	handleConn(c)
-	// Block forever
-	select {}
-}
 
-func handleConn(conn net.Conn) {
-	go func() {
-		for range time.NewTicker(5 * time.Second).C {
-			message := "test message from client"
-			_, err := conn.Write([]byte(message))
-			if err != nil {
-				panic(err)
-			}
-		}
-	}()
-
-	for {
-		buffer := make([]byte, messageSize)
-		n, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Println("Datachannel closed; Exit the readloop:", err)
-			continue
-		}
-		fmt.Printf("Server Message from DataChannel: %s\n", string(buffer[:n]))
-
+	response, err := client.Do(request)
+	if err != nil {
+		panic(err)
 	}
+	defer response.Body.Close()
+
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("BODY --------------->", string(body))
 }

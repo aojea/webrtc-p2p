@@ -121,7 +121,7 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 			panic(dErr)
 		}
 
-		incomingConn <- rwconn.NewConn(raw, raw)
+		incomingConn <- rwconn.NewConn(raw, raw, rwconn.SetWriteDelay(500*time.Millisecond))
 	})
 
 	// Create an offer to send to the browser
@@ -149,9 +149,12 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 		return nil, err
 	}
 
+	remoteID, _, _ := net.SplitHostPort(address)
+
+	log.Printf("Send offer to id: %s\n", remoteID)
 	_, err = http.PostForm(d.signalServer+"/offer",
 		url.Values{
-			"id":    {address},
+			"id":    {remoteID},
 			"offer": {string(offerData)},
 		})
 	if err != nil {
@@ -161,21 +164,19 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	// receive candidates
 	go func() {
 		br := bufio.NewReader(res.Body)
-		for {
-			line, err := br.ReadSlice('\n')
-			if err != nil {
-				return
-			}
-			answer := webrtc.SessionDescription{}
-			err = json.Unmarshal(line, &answer)
-			if err != nil {
-				panic(err)
-			}
-			// Set the remote SessionDescription
-			err = peerConnection.SetRemoteDescription(answer)
-			if err != nil {
-				panic(err)
-			}
+		line, err := br.ReadSlice('\n')
+		if err != nil {
+			return
+		}
+		answer := webrtc.SessionDescription{}
+		err = json.Unmarshal(line, &answer)
+		if err != nil {
+			panic(err)
+		}
+		// Set the remote SessionDescription
+		err = peerConnection.SetRemoteDescription(answer)
+		if err != nil {
+			panic(err)
 		}
 	}()
 

@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/aojea/rwconn"
 	"github.com/pion/webrtc/v3"
@@ -89,6 +92,7 @@ func (ln *Listener) run() {
 			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
 			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
 			fmt.Println("Peer Connection has gone to failed exiting")
+			os.Exit(1)
 		}
 	})
 
@@ -112,7 +116,7 @@ func (ln *Listener) run() {
 				panic(dErr)
 			}
 
-			ln.connc <- rwconn.NewConn(raw, raw)
+			ln.connc <- rwconn.NewConn(raw, raw, rwconn.SetWriteDelay(500*time.Millisecond))
 		})
 	})
 
@@ -134,9 +138,10 @@ func (ln *Listener) run() {
 	for {
 		line, err := br.ReadSlice('\n')
 		if err != nil {
-			return
+			panic(err)
 		}
 
+		log.Println("received offer")
 		offer := webrtc.SessionDescription{}
 		err = json.Unmarshal(line, &offer)
 		if err != nil {
