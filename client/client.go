@@ -44,6 +44,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	log.Println("Dialed connection")
 	handleConn(c)
 	// Block forever
 	select {}
@@ -148,7 +149,7 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	}
 
 	// Create a datachannel with label 'data'
-	dataChannel, err := peerConnection.CreateDataChannel("data"+address, nil)
+	dataChannel, err := peerConnection.CreateDataChannel("data_"+address, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -225,8 +226,6 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 			if err != nil {
 				panic(err)
 			}
-			fmt.Println("Received answer", answer)
-			fmt.Println("------------------------------")
 			// Set the remote SessionDescription
 			err = peerConnection.SetRemoteDescription(answer)
 			if err != nil {
