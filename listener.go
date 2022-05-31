@@ -41,9 +41,18 @@ func NewListener(id, remote string) (*Listener, error) {
 	s.Handler = ln.Handler
 
 	go func() {
-		err := s.Run(ln.donec)
-		if err != nil {
-			log.Printf("signaling client exited with error: %v\n", err)
+		for {
+			err := s.Run(ln.donec)
+			if err != nil {
+				log.Printf("signaling client exited with error: %v\n", err)
+			}
+			// retry if donec was not closed
+			select {
+			case <-ln.donec:
+				return
+			default:
+				time.Sleep(1 * time.Second)
+			}
 		}
 	}()
 

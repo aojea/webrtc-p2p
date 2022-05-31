@@ -40,9 +40,18 @@ func NewDialer(id, remote string) (*Dialer, error) {
 	s.Handler = d.Handler
 
 	go func() {
-		err := s.Run(d.donec)
-		if err != nil {
-			log.Printf("signaling client exited with error: %v\n", err)
+		for {
+			err := s.Run(d.donec)
+			if err != nil {
+				log.Printf("signaling client exited with error: %v\n", err)
+			}
+			// retry if donec was not closed
+			select {
+			case <-d.donec:
+				return
+			default:
+				time.Sleep(1 * time.Second)
+			}
 		}
 	}()
 
