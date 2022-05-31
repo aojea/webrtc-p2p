@@ -2,17 +2,12 @@ package main
 
 import (
 	"bufio"
-	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
-
-	"golang.org/x/net/http2"
 
 	"github.com/pion/p2p"
 )
@@ -35,14 +30,18 @@ func main() {
 		panic(err)
 	}
 
-	tr := &http2.Transport{
-		// So http2.Transport doesn't complain the URL scheme isn't 'https'
-		AllowHTTP: true,
-		// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
-		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-			return d.Dial(context.TODO(), network, addr)
-		},
-	}
+	/*
+		tr := &http2.Transport{
+			// So http2.Transport doesn't complain the URL scheme isn't 'https'
+			AllowHTTP: true,
+			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
+			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+				return d.Dial(context.TODO(), network, addr)
+			},
+		}
+	*/
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = d.Dial
 
 	target := &url.URL{Host: "server_host", Scheme: "http"}
 
