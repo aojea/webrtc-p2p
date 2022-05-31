@@ -1,13 +1,10 @@
 package p2p
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
-	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
@@ -18,11 +15,11 @@ import (
 var _ net.Listener = (*Listener)(nil)
 
 type Listener struct {
-	id           string
-	signalServer string // url to reach the signal server
-	// webrtc settings
-	api *webrtc.API
-	cfg webrtc.Configuration
+	*SignalClient
+
+	// store peer connections
+	mu    sync.Mutex
+	peers map[string]*webrtc.PeerConnection
 
 	connc     chan net.Conn
 	donec     chan struct{}
@@ -30,59 +27,55 @@ type Listener struct {
 }
 
 func NewListener(id, remote string) (*Listener, error) {
-	u, err := url.Parse(remote)
+	s, err := NewSignalClient(id, remote)
 	if err != nil {
 		return nil, err
 	}
 
 	ln := &Listener{
-		id:           id,
-		signalServer: remote,
-		connc:        make(chan net.Conn),
-		donec:        make(chan struct{}),
+		peers: map[string]*webrtc.PeerConnection{},
+		connc: make(chan net.Conn),
+		donec: make(chan struct{}),
 	}
+	ln.SignalClient = s
+	s.Handler = ln.Handler
 
-	// Since this behavior diverges from the WebRTC API it has to be
-	// enabled using a settings engine. Mixing both detached and the
-	// OnMessage DataChannel API is not supported.
-	// Create a SettingEngine and enable Detach
-	s := webrtc.SettingEngine{}
-	s.DetachDataChannels()
-
-	// Implementation specific, the signal server has embedded a TURN server
-	turnDialer := turnProxyDialer(u.Host)
-	s.SetICEProxyDialer(turnDialer)
-
-	// Create an API object with the engine
-	ln.api = webrtc.NewAPI(webrtc.WithSettingEngine(s))
-
-	// Prepare the configuration
-	ln.cfg = webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs:       []string{"turn:127.0.1.1:3478?transport=tcp"},
-				Username:   "user",
-				Credential: "pass",
-			},
-		},
-	}
-
-	go ln.run()
+	go func() {
+		err := s.Run(ln.donec)
+		if err != nil {
+			log.Printf("signaling client exited with error: %v\n", err)
+		}
+	}()
 
 	return ln, nil
 
 }
 
-func (ln *Listener) run() {
+func (ln *Listener) Handler(msg signalMsg) {
+	var err error
 
-	// Create a new RTCPeerConnection using the API object
-	peerConnection, err := ln.api.NewPeerConnection(ln.cfg)
-	if err != nil {
-		panic(err)
+	switch msg.Kind {
+	case "offer":
+	default:
+		log.Printf("Unexpected msg: %+v\n", msg)
+		return
 	}
 
+	ln.mu.Lock()
+	peerConnection, ok := ln.peers[msg.Origin]
+	if !ok {
+		// Create a new RTCPeerConnection using the API object
+		peerConnection, err = ln.api.NewPeerConnection(ln.cfg)
+		if err != nil {
+			ln.mu.Unlock()
+			panic(err)
+		}
+		ln.peers[msg.Origin] = peerConnection
+	}
+	ln.mu.Unlock()
+
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+		log.Printf("ICE Connection State has changed: %s\n", connectionState.String())
 	})
 
 	// Set ICE Candidate handler. As soon as a PeerConnection has gathered a candidate
@@ -94,17 +87,16 @@ func (ln *Listener) run() {
 	// Set the handler for Peer connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
+		log.Printf("Peer Connection State has changed: %s\n", s.String())
 	})
 
 	// Register data channel creation handling
 	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
-		fmt.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
+		log.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
 
 		// Register channel opening handling
 		d.OnOpen(func() {
-			fmt.Printf("Data channel '%s'-'%d' open.\n", d.Label(), d.ID())
-
+			log.Printf("Data channel '%s'-'%d' open.\n", d.Label(), d.ID())
 			// Detach the data channel
 			raw, dErr := d.Detach()
 			if dErr != nil {
@@ -115,74 +107,53 @@ func (ln *Listener) run() {
 		})
 	})
 
-	// register
-	res, err := http.PostForm(ln.signalServer+"/register",
-		url.Values{
-			"id": {ln.id},
-		})
-
+	log.Println("received offer")
+	offer := webrtc.SessionDescription{}
+	err = json.Unmarshal([]byte(msg.SDP), &offer)
 	if err != nil {
 		panic(err)
 	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		panic(fmt.Errorf("status code %d", res.StatusCode))
+
+	// Set the remote SessionDescription
+	err = peerConnection.SetRemoteDescription(offer)
+	if err != nil {
+		panic(err)
 	}
 
-	br := bufio.NewReader(res.Body)
-	for {
-		line, err := br.ReadSlice('\n')
-		if err != nil {
-			panic(err)
-		}
+	// Create answer
+	answer, err := peerConnection.CreateAnswer(nil)
+	if err != nil {
+		panic(err)
+	}
 
-		log.Println("received offer")
-		offer := webrtc.SessionDescription{}
-		err = json.Unmarshal(line, &offer)
-		if err != nil {
-			panic(err)
-		}
+	// Create channel that is blocked until ICE Gathering is complete
+	gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
+	// Sets the LocalDescription, and starts our UDP listeners
+	err = peerConnection.SetLocalDescription(answer)
+	if err != nil {
+		panic(err)
+	}
 
-		// Set the remote SessionDescription
-		err = peerConnection.SetRemoteDescription(offer)
-		if err != nil {
-			panic(err)
-		}
+	// Block until ICE Gathering is complete, disabling trickle ICE
+	// we do this because we only can exchange one signaling message
+	// in a production application you should exchange ICE Candidates via OnICECandidate
+	<-gatherComplete
 
-		// Create answer
-		answer, err := peerConnection.CreateAnswer(nil)
-		if err != nil {
-			panic(err)
-		}
+	// Output the answer in base64 so we can paste it in browser
+	answerData, err := json.Marshal(*peerConnection.LocalDescription())
+	if err != nil {
+		panic(err)
+	}
 
-		// Create channel that is blocked until ICE Gathering is complete
-		gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
-		// Sets the LocalDescription, and starts our UDP listeners
-		err = peerConnection.SetLocalDescription(answer)
-		if err != nil {
-			panic(err)
-		}
-
-		// Block until ICE Gathering is complete, disabling trickle ICE
-		// we do this because we only can exchange one signaling message
-		// in a production application you should exchange ICE Candidates via OnICECandidate
-		<-gatherComplete
-
-		// Output the answer in base64 so we can paste it in browser
-		answerData, err := json.Marshal(*peerConnection.LocalDescription())
-		if err != nil {
-			panic(err)
-		}
-
-		_, err = http.PostForm(ln.signalServer+"/offer",
-			url.Values{
-				"id":    {"client_host"},
-				"offer": {string(answerData)},
-			})
-		if err != nil {
-			panic(err)
-		}
-
+	answerMsg := signalMsg{
+		Kind:   "answer",
+		Origin: ln.id,
+		Target: msg.Origin,
+		SDP:    string(answerData),
+	}
+	err = ln.SendMessage(answerMsg)
+	if err != nil {
+		panic(err)
 	}
 
 }

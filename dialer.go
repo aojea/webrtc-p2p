@@ -1,14 +1,11 @@
 package p2p
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
-	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
@@ -17,12 +14,12 @@ import (
 )
 
 type Dialer struct {
-	id           string
-	signalServer string // url to reach the signal server
-	// webrtc settings
-	api *webrtc.API
-	cfg webrtc.Configuration
-	//
+	*SignalClient
+
+	// store peer connections
+	mu    sync.Mutex
+	peers map[string]*webrtc.PeerConnection
+
 	donec     chan struct{}
 	closeOnce sync.Once
 }
@@ -30,71 +27,79 @@ type Dialer struct {
 // NewDialer returns the side of the connection which will initiate
 // new connections over the already established reverse connections.
 func NewDialer(id, remote string) (*Dialer, error) {
-	u, err := url.Parse(remote)
+	s, err := NewSignalClient(id, remote)
 	if err != nil {
 		return nil, err
 	}
-
 	d := &Dialer{
-		id:           id,
-		signalServer: remote,
-		donec:        make(chan struct{}),
+		donec: make(chan struct{}),
+		peers: map[string]*webrtc.PeerConnection{},
 	}
 
-	// Since this behavior diverges from the WebRTC API it has to be
-	// enabled using a settings engine. Mixing both detached and the
-	// OnMessage DataChannel API is not supported.
-	// Create a SettingEngine and enable Detach
-	s := webrtc.SettingEngine{}
-	s.DetachDataChannels()
+	d.SignalClient = s
+	s.Handler = d.Handler
 
-	// Implementation specific, the signal server has embedded a TURN server
-	turnDialer := turnProxyDialer(u.Host)
-	s.SetICEProxyDialer(turnDialer)
-
-	// Create an API object with the engine
-	d.api = webrtc.NewAPI(webrtc.WithSettingEngine(s))
-
-	// Prepare the configuration
-	d.cfg = webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs:       []string{"turn:127.0.1.1:3478?transport=tcp"},
-				Username:   "user",
-				Credential: "pass",
-			},
-		},
-	}
+	go func() {
+		err := s.Run(d.donec)
+		if err != nil {
+			log.Printf("signaling client exited with error: %v\n", err)
+		}
+	}()
 
 	return d, nil
+}
+
+func (d *Dialer) Handler(msg signalMsg) {
+	switch msg.Kind {
+	case "answer":
+	default:
+		log.Printf("Unexpected msg: %+v\n", msg)
+		return
+	}
+
+	d.mu.Lock()
+	peerConnection, ok := d.peers[msg.Origin]
+	if !ok {
+		return
+	}
+	d.mu.Unlock()
+	answer := webrtc.SessionDescription{}
+	err := json.Unmarshal([]byte(msg.SDP), &answer)
+	if err != nil {
+		panic(err)
+	}
+	// Set the remote SessionDescription
+	err = peerConnection.SetRemoteDescription(answer)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.Conn, error) {
 	now := time.Now()
 	defer log.Printf("dial to %s took %v", address, time.Since(now))
+
+	target, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+
 	incomingConn := make(chan net.Conn)
-
-	// register
-	res, err := http.PostForm(d.signalServer+"/register",
-		url.Values{
-			"id": {d.id},
-		})
-	if err != nil {
-		return nil, err
+	d.mu.Lock()
+	peerConnection, ok := d.peers[target]
+	if !ok {
+		// Create a new RTCPeerConnection using the API object
+		peerConnection, err = d.api.NewPeerConnection(d.cfg)
+		if err != nil {
+			d.mu.Unlock()
+			return nil, err
+		}
+		d.peers[target] = peerConnection
 	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return nil, fmt.Errorf("Unable to register on the signal server, status code %d", res.StatusCode)
-	}
-
-	// Create a new RTCPeerConnection using the API object
-	peerConnection, err := d.api.NewPeerConnection(d.cfg)
-	if err != nil {
-		return nil, err
-	}
+	d.mu.Unlock()
 
 	// Create a datachannel with label 'data'
-	channelName := fmt.Sprintf("data_%s_%d", address, time.Now().Unix())
+	channelName := fmt.Sprintf("data_%s_%d", target, time.Now().Unix())
 	dataChannel, err := peerConnection.CreateDataChannel(channelName, nil)
 	if err != nil {
 		return nil, err
@@ -103,7 +108,7 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+		log.Printf("ICE Connection State has changed: %s\n", connectionState.String())
 	})
 
 	// Set ICE Candidate handler. As soon as a PeerConnection has gathered a candidate
@@ -112,13 +117,12 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	})
 
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		fmt.Printf("Peer Connection State has changed: %s\n", s.String())
+		log.Printf("Peer Connection State has changed: %s\n", s.String())
 	})
 
 	// Register channel opening handling
 	dataChannel.OnOpen(func() {
-		fmt.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
-
+		log.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
 		// Detach the data channel
 		raw, dErr := dataChannel.Detach()
 		if dErr != nil {
@@ -146,42 +150,22 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	// in a production application you should exchange ICE Candidates via OnICECandidate
 	<-gatherComplete
 
-	// TODO SEND THE OFFER
 	offerData, err := json.Marshal(*peerConnection.LocalDescription())
 	if err != nil {
 		return nil, err
 	}
 
-	remoteID, _, _ := net.SplitHostPort(address)
-
-	log.Printf("Send offer to id: %s\n", remoteID)
-	_, err = http.PostForm(d.signalServer+"/offer",
-		url.Values{
-			"id":    {remoteID},
-			"offer": {string(offerData)},
-		})
-	if err != nil {
-		return nil, err
+	offerMsg := signalMsg{
+		Kind:   "offer",
+		Origin: d.id,
+		Target: target,
+		SDP:    string(offerData),
 	}
-	// TODO GET THE ANSWER
-	// receive candidates
-	go func() {
-		br := bufio.NewReader(res.Body)
-		line, err := br.ReadSlice('\n')
-		if err != nil {
-			return
-		}
-		answer := webrtc.SessionDescription{}
-		err = json.Unmarshal(line, &answer)
-		if err != nil {
-			panic(err)
-		}
-		// Set the remote SessionDescription
-		err = peerConnection.SetRemoteDescription(answer)
-		if err != nil {
-			panic(err)
-		}
-	}()
+	err = d.SendMessage(offerMsg)
+	if err != nil {
+		panic(err)
+	}
+
 	select {
 	case conn := <-incomingConn:
 		return conn, nil

@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/pion/p2p"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
+
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -95,6 +98,10 @@ func main() {
 		panic(err)
 	}
 	defer ln.Close()
-	log.Fatal(http.Serve(ln, mux))
+	h2s := &http2.Server{}
+	h1s := &http.Server{
+		Handler: h2c.NewHandler(mux, h2s),
+	}
+	log.Fatal(h1s.Serve(ln))
 
 }
