@@ -69,6 +69,7 @@ func (d *Dialer) Handler(msg signalMsg) {
 	d.mu.Lock()
 	peerConnection, ok := d.peers[msg.Origin]
 	if !ok {
+		d.mu.Unlock()
 		return
 	}
 	d.mu.Unlock()
