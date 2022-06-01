@@ -90,6 +90,7 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	now := time.Now()
 	defer log.Printf("dial to %s took %v", address, time.Since(now))
 
+	log.Println("starting dialing to", address)
 	target, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
@@ -172,6 +173,8 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 		Target: target,
 		SDP:    string(offerData),
 	}
+
+	log.Println("dialing: sending offer to", target)
 	err = d.SendMessage(offerMsg)
 	if err != nil {
 		panic(err)
@@ -179,8 +182,10 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 
 	select {
 	case conn := <-incomingConn:
+		log.Println("dialed complete to", address)
 		return conn, nil
 	case <-ctx.Done():
+		log.Println("dialed timeout to", address)
 		return nil, ctx.Err()
 	}
 

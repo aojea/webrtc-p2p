@@ -241,35 +241,41 @@ func (s *SignalServer) turnProxyHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	log.Println("connect connection")
 	go func() {
 		io.Copy(destConn, clientConn)
 	}()
-	go io.Copy(clientConn, destConn)
+	io.Copy(clientConn, destConn)
 }
 
 var _ proxy.Dialer = (*turnDialer)(nil)
 
 type turnDialer struct {
-	address string
+	address url.URL
 	client  *http.Client
 }
 
 func (t *turnDialer) Dial(network string, addr string) (net.Conn, error) {
-	log.Printf("dialing proxy %q ...", t.address)
+	log.Printf("dialing proxy %q ...", t.address.String())
 	var d net.Dialer
-	c, err := d.DialContext(context.TODO(), "tcp", t.address)
+	c, err := d.DialContext(context.TODO(), "tcp", t.address.Host)
 	if err != nil {
-		return nil, fmt.Errorf("dialing proxy %q failed: %v", t.address, err)
+		log.Println("dialing proxy: failed")
+		return nil, fmt.Errorf("dialing proxy %v failed: %v", t.address, err)
 	}
-	fmt.Fprintf(c, "GET %s/proxy HTTP/1.1\r\nHost: %s\r\n\r\n", t.address, "kcp")
+	log.Println("dialing proxy get /proxy 1111")
+
+	fmt.Fprintf(c, "GET /proxy HTTP/1.1\r\nHost: %s\r\n\r\n", t.address.Host)
+	log.Println("dialing proxy get /proxy 22222")
 	br := bufio.NewReader(c)
 	res, err := http.ReadResponse(br, nil)
+	log.Println("dialing proxy read response")
 	if err != nil {
-		return nil, fmt.Errorf("reading HTTP response from %s failed: %v", t.address, err)
+		log.Println("dialing proxy: error reading http response")
+		return nil, fmt.Errorf("reading HTTP response from %s failed: %v", t.address.Host, err)
 	}
 	if res.StatusCode != 200 {
-		return nil, fmt.Errorf(" HTTP response from %s status failed: %v", t.address, res.Status)
+		log.Println("dialing proxy: error http code", res.StatusCode)
+		return nil, fmt.Errorf(" HTTP response from %s status failed: %v", t.address.Host, res.Status)
 	}
 
 	// It's safe to discard the bufio.Reader here and return the
@@ -278,12 +284,13 @@ func (t *turnDialer) Dial(network string, addr string) (net.Conn, error) {
 	// no unbuffered data. But we can double-check.
 	if br.Buffered() > 0 {
 		return nil, fmt.Errorf("unexpected %d bytes of buffered data from CONNECT proxy %q",
-			br.Buffered(), t.address)
+			br.Buffered(), t.address.Host)
 	}
+	log.Printf("dialing proxy %q succeeded", t.address.String())
 	return c, nil
 }
 
-func turnProxyDialer(proxyAddr string, client *http.Client) proxy.Dialer {
+func turnProxyDialer(proxyAddr url.URL, client *http.Client) proxy.Dialer {
 	return &turnDialer{proxyAddr, client}
 }
 
@@ -302,7 +309,7 @@ type SignalClient struct {
 }
 
 func NewSignalClient(id string, signalServer string) (*SignalClient, error) {
-	_, err := url.Parse(signalServer)
+	u, err := url.Parse(signalServer)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +325,7 @@ func NewSignalClient(id string, signalServer string) (*SignalClient, error) {
 	ws := webrtc.SettingEngine{}
 	ws.DetachDataChannels()
 	// Implementation specific, the signal server has embedded a TURN server
-	turnDialer := turnProxyDialer(signalServer, s.client)
+	turnDialer := turnProxyDialer(*u, s.client)
 	ws.SetICEProxyDialer(turnDialer)
 	s.api = webrtc.NewAPI(webrtc.WithSettingEngine(ws))
 	// Fake entry since we use the proxied server embedded in the signaling server

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
 	"log"
@@ -108,11 +107,6 @@ func main() {
 		w.Write([]byte(strings.Repeat("a", 1724)))
 
 	})
-
-	fmt.Print("Press 'Enter' when both processes have started")
-	if _, err := bufio.NewReader(os.Stdin).ReadBytes('\n'); err != nil {
-		panic(err)
-	}
 
 	ln, err := p2p.NewListener(localID, remote)
 	if err != nil {
