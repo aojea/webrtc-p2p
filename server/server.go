@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,7 +36,7 @@ func main() {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
 
-	flag.StringVar(&remote, "remote", "http://localhost:9001", "signal server url")
+	flag.StringVar(&remote, "remote", "", "signal server url")
 	flag.Parse()
 
 	// validation
@@ -54,6 +55,18 @@ func main() {
 			panic(err.Error())
 		}
 	}
+
+	if remote == "" {
+		remote = os.Getenv("SIGNAL_SERVER_URL")
+		if remote == "" {
+			panic("url for signal server not set")
+		}
+	}
+	_, err = url.Parse(remote)
+	if err != nil {
+		panic(err)
+	}
+
 	target, _, err := rest.DefaultServerURL(config.Host, "", schema.GroupVersion{}, true)
 	if err != nil {
 		panic(err)
