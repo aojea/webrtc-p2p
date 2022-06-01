@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -119,8 +120,14 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
-	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		log.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+	peerConnection.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		log.Printf("ICE Connection State has changed: %s\n", s.String())
+		if s == webrtc.ICEConnectionStateFailed {
+			d.mu.Lock()
+			peerConnection.Close()
+			delete(d.peers, target)
+			d.mu.Unlock()
+		}
 	})
 
 	// Set ICE Candidate handler. As soon as a PeerConnection has gathered a candidate
@@ -130,19 +137,30 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		log.Printf("Peer Connection State has changed: %s\n", s.String())
+		if s == webrtc.PeerConnectionStateFailed ||
+			s == webrtc.PeerConnectionStateDisconnected {
+			d.mu.Lock()
+			peerConnection.Close()
+			delete(d.peers, target)
+			d.mu.Unlock()
+		}
 	})
 
+	var raw io.ReadWriteCloser
 	// Register channel opening handling
 	dataChannel.OnOpen(func() {
 		log.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
 		// Detach the data channel
-		raw, dErr := dataChannel.Detach()
+		var dErr error
+		raw, dErr = dataChannel.Detach()
 		if dErr != nil {
 			panic(dErr)
 		}
 		incomingConn <- rwconn.NewConn(raw, raw, rwconn.SetWriteDelay(500*time.Millisecond))
 	})
-
+	dataChannel.OnClose(func() {
+		raw.Close()
+	})
 	// Create an offer to send to the browser
 	offer, err := peerConnection.CreateOffer(nil)
 	if err != nil {

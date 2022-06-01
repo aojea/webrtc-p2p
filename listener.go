@@ -3,6 +3,7 @@ package p2p
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -83,8 +84,14 @@ func (ln *Listener) Handler(msg signalMsg) {
 	}
 	ln.mu.Unlock()
 
-	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		log.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+	peerConnection.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		log.Printf("ICE Connection State has changed: %s\n", s.String())
+		if s == webrtc.ICEConnectionStateFailed {
+			ln.mu.Lock()
+			peerConnection.Close()
+			delete(ln.peers, msg.Origin)
+			ln.mu.Unlock()
+		}
 	})
 
 	// Set ICE Candidate handler. As soon as a PeerConnection has gathered a candidate
@@ -97,8 +104,15 @@ func (ln *Listener) Handler(msg signalMsg) {
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
 		log.Printf("Peer Connection State has changed: %s\n", s.String())
+		if s == webrtc.PeerConnectionStateFailed {
+			ln.mu.Lock()
+			peerConnection.Close()
+			delete(ln.peers, msg.Origin)
+			ln.mu.Unlock()
+		}
 	})
 
+	var raw io.ReadWriteCloser
 	// Register data channel creation handling
 	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
 		log.Printf("New DataChannel %s %d\n", d.Label(), d.ID())
@@ -107,12 +121,16 @@ func (ln *Listener) Handler(msg signalMsg) {
 		d.OnOpen(func() {
 			log.Printf("Data channel '%s'-'%d' open.\n", d.Label(), d.ID())
 			// Detach the data channel
-			raw, dErr := d.Detach()
+			var dErr error
+			raw, dErr = d.Detach()
 			if dErr != nil {
 				panic(dErr)
 			}
 
 			ln.connc <- rwconn.NewConn(raw, raw, rwconn.SetWriteDelay(500*time.Millisecond))
+		})
+		d.OnClose(func() {
+			raw.Close()
 		})
 	})
 

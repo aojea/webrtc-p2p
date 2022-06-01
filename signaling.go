@@ -100,6 +100,7 @@ func (s *SignalServer) Run(stopCh chan struct{}) error {
 	}
 	defer tcpListener.Close()
 	s.turnAddress = tcpListener.Addr().String()
+	port := uint16(tcpListener.Addr().(*net.TCPAddr).Port)
 	t, err := turn.NewServer(turn.ServerConfig{
 		Realm: "kcp",
 		// Set AuthHandler callback
@@ -112,9 +113,12 @@ func (s *SignalServer) Run(stopCh chan struct{}) error {
 		ListenerConfigs: []turn.ListenerConfig{
 			{
 				Listener: tcpListener,
-				RelayAddressGenerator: &turn.RelayAddressGeneratorStatic{
+				RelayAddressGenerator: &turn.RelayAddressGeneratorPortRange{
 					RelayAddress: net.ParseIP(s.publicIP),
-					Address:      "0.0.0.0",
+					Address:      "127.0.0.1",
+					MinPort:      port,
+					MaxPort:      port,
+					MaxRetries:   3,
 				},
 			},
 		},
@@ -268,7 +272,7 @@ func (t *turnDialer) Dial(network string, addr string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dialing proxy %q failed: %v", proxyAddr, err)
 	}
-	fmt.Fprintf(c, "CONNECT %s/proxy HTTP/1.1\r\nHost: %s\r\n\r\n", addr, t.proxy.Hostname())
+	fmt.Fprintf(c, "CONNECT %s/proxy HTTP/1.1\r\nHost: %s\r\n\r\n", proxyAddr, t.proxy.Hostname())
 	br := bufio.NewReader(c)
 	res, err := http.ReadResponse(br, nil)
 	if err != nil {
@@ -332,7 +336,7 @@ func NewSignalClient(id string, signalServer string) (*SignalClient, error) {
 	s.cfg = webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			{
-				URLs:       []string{"turn:127.0.1.1:3478?transport=tcp"},
+				URLs:       []string{"turn:private.turn.local:3478?transport=tcp"},
 				Username:   turnUser,
 				Credential: turnSecret,
 			},
@@ -412,23 +416,5 @@ func (s *SignalClient) SendMessage(m signalMsg) error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
-	return nil
-}
-
-type flushWrite struct {
-	w io.Writer
-	f http.Flusher
-}
-
-func (w *flushWrite) Write(data []byte) (int, error) {
-	n, err := w.w.Write(data)
-	w.f.Flush()
-	return n, err
-}
-
-func (w *flushWrite) Close() error {
-	// Currently server side close of connection is not supported in Go.
-	// The server closes the connection when the http.Handler function returns.
-	// We use connection context and cancel function as a work-around.
 	return nil
 }
