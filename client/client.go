@@ -1,89 +1,79 @@
 package main
 
 import (
-	"bufio"
-	"flag"
-	"fmt"
+	"context"
+	"log"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
+	"time"
+
+	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/component-base/cli"
+	"k8s.io/kubectl/pkg/cmd"
+	"k8s.io/kubectl/pkg/cmd/plugin"
+	"k8s.io/kubectl/pkg/cmd/util"
+
+	// Import to initialize client auth plugins.
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/rest"
 
 	"github.com/pion/p2p"
 )
 
-var (
-	remote   string // remote url
-	localID  string
-	remoteID string
-)
-
 func main() {
-	flag.StringVar(&remote, "remote", "", "signal server url")
-	flag.StringVar(&localID, "id", "", "identifier used for the webrtc exchange (default to hostname)")
-	flag.StringVar(&remoteID, "remote-id", "", "identifier target for the webrtc exchange")
-	flag.Parse()
 
-	if remote == "" {
-		remote = os.Getenv("SIGNAL_SERVER_URL")
-		if remote == "" {
-			panic("url for signal server not set")
-		}
+	signalServer := os.Getenv("SIGNAL_SERVER_URL")
+	if signalServer == "" {
+		panic("url for signal server not set")
 	}
-	_, err := url.Parse(remote)
+	_, err := url.Parse(signalServer)
 	if err != nil {
 		panic(err)
 	}
 
-	if localID == "" {
-		localID, err = os.Hostname()
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	if remoteID == "" {
-		panic("missing remote id for webrtc communication")
-	}
-	fmt.Print("Press 'Enter' when both processes have started")
-	if _, err := bufio.NewReader(os.Stdin).ReadBytes('\n'); err != nil {
-		panic(err)
-	}
-
-	d, err := p2p.NewDialer(localID, remote)
+	localID, err := os.Hostname()
 	if err != nil {
 		panic(err)
 	}
 
-	/*
-		tr := &http2.Transport{
-			// So http2.Transport doesn't complain the URL scheme isn't 'https'
-			AllowHTTP: true,
-			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
-			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-				return d.Dial(context.TODO(), network, addr)
-			},
-		}
-	*/
+	d, err := p2p.NewDialer(localID, signalServer)
+	if err != nil {
+		panic(err)
+	}
+
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.DialContext = d.Dial
 
-	target := &url.URL{Host: remoteID, Scheme: "http"}
-
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	originalDirector := proxy.Director
-	proxy.Transport = tr
-	proxy.Director = func(req *http.Request) {
-		req.Host = target.Host
-		originalDirector(req)
+	defaultConfigFlags := genericclioptions.NewConfigFlags(true).WithDeprecatedPasswordFlag().WithDiscoveryBurst(300).WithDiscoveryQPS(50.0)
+	defaultConfigFlags.WrapConfigFn = func(c *rest.Config) *rest.Config {
+		c.Dial = d.Dial
+		return c
 	}
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		fmt.Println(resp)
-		return nil
-
+	command := cmd.NewDefaultKubectlCommandWithArgs(cmd.KubectlOptions{
+		PluginHandler: cmd.NewDefaultPluginHandler(plugin.ValidPluginFilenamePrefixes),
+		Arguments:     os.Args,
+		ConfigFlags:   defaultConfigFlags,
+		IOStreams:     genericclioptions.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr},
+	})
+	if err := cli.RunNoErrOutput(command); err != nil {
+		time.Sleep(10 * time.Second)
+		// Pretty-print the error and exit with an error.
+		util.CheckErr(err)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/", proxy)
-	http.ListenAndServe(":8080", mux)
+	time.Sleep(10 * time.Second)
+
+}
+
+type customRoundTripper struct {
+	host string
+	rt   http.RoundTripper
+}
+
+func (c *customRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	log.Println("RoundTrip", r.Host, c.host, r)
+	r = r.Clone(context.TODO())
+	r.Host = c.host
+	return c.rt.RoundTrip(r)
 }
