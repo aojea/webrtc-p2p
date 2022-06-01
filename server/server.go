@@ -25,7 +25,8 @@ import (
 )
 
 var (
-	remote string // remote url
+	remote  string // remote url
+	localID string
 )
 
 func main() {
@@ -36,6 +37,7 @@ func main() {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
 
+	flag.StringVar(&localID, "id", "", "identifier used for the webrtc exchange (default to hostname)")
 	flag.StringVar(&remote, "remote", "", "signal server url")
 	flag.Parse()
 
@@ -67,6 +69,12 @@ func main() {
 		panic(err)
 	}
 
+	if localID == "" {
+		localID, err = os.Hostname()
+		if err != nil {
+			panic(err)
+		}
+	}
 	target, _, err := rest.DefaultServerURL(config.Host, "", schema.GroupVersion{}, true)
 	if err != nil {
 		panic(err)
@@ -106,7 +114,7 @@ func main() {
 		panic(err)
 	}
 
-	ln, err := p2p.NewListener("server_host", remote)
+	ln, err := p2p.NewListener(localID, remote)
 	if err != nil {
 		panic(err)
 	}
