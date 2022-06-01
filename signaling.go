@@ -106,7 +106,7 @@ func (s *SignalServer) Run(stopCh chan struct{}) error {
 		// This is called everytime a user tries to authenticate with the TURN server
 		// Return the key for that user, or false when no user is found
 		AuthHandler: func(username string, realm string, srcAddr net.Addr) ([]byte, bool) {
-			return turn.GenerateAuthKey(username, "kcp", turnSecret), true
+			return turn.GenerateAuthKey(turnUser, "kcp", turnSecret), true
 		},
 		// ListenerConfig is a list of Listeners and the configuration around them
 		ListenerConfigs: []turn.ListenerConfig{
@@ -122,7 +122,7 @@ func (s *SignalServer) Run(stopCh chan struct{}) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("TURN server listening on %s\n", s.turnAddress)
+	log.Printf("TURN server listening on %s with publicIP %s\n", s.turnAddress, s.publicIP)
 	defer t.Close()
 	<-stopCh
 	return nil
@@ -222,60 +222,61 @@ func (s *SignalServer) registerHandler(w http.ResponseWriter, r *http.Request, i
 }
 
 func (s *SignalServer) turnProxyHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("connect request received for turn")
-
-	destConn, err := net.DialTimeout("tcp", s.turnAddress, 10*time.Second)
+	log.Println("connect request received for turn", s.turnAddress)
+	dest_conn, err := net.DialTimeout("tcp", s.turnAddress, 10*time.Second)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	defer destConn.Close()
-
-	log.Println("connect to turn server established")
-	_, ok := w.(http.Hijacker)
+	w.WriteHeader(http.StatusOK)
+	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		panic("flusher not support")
-	}
-	clientConn, _, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		return
 	}
-	go func() {
-		io.Copy(destConn, clientConn)
-	}()
-	io.Copy(clientConn, destConn)
+	client_conn, _, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	}
+	go transfer(dest_conn, client_conn)
+	go transfer(client_conn, dest_conn)
+}
+func transfer(destination io.WriteCloser, source io.ReadCloser) {
+	defer destination.Close()
+	defer source.Close()
+	_, err := io.Copy(destination, source)
+	if err != nil {
+		log.Println("turn proxy connection error", err)
+	}
 }
 
 var _ proxy.Dialer = (*turnDialer)(nil)
 
 type turnDialer struct {
-	address url.URL
-	client  *http.Client
+	proxy  url.URL
+	client *http.Client
 }
 
 func (t *turnDialer) Dial(network string, addr string) (net.Conn, error) {
-	log.Printf("dialing proxy %q ...", t.address.String())
-	var d net.Dialer
-	c, err := d.DialContext(context.TODO(), "tcp", t.address.Host)
-	if err != nil {
-		log.Println("dialing proxy: failed")
-		return nil, fmt.Errorf("dialing proxy %v failed: %v", t.address, err)
+	proxyAddr := t.proxy.Host
+	if t.proxy.Port() == "" {
+		proxyAddr = net.JoinHostPort(proxyAddr, "80")
 	}
-	log.Println("dialing proxy get /proxy 1111")
-
-	fmt.Fprintf(c, "GET /proxy HTTP/1.1\r\nHost: %s\r\n\r\n", t.address.Host)
-	log.Println("dialing proxy get /proxy 22222")
+	log.Printf("dialing proxy %q ...", proxyAddr)
+	var d net.Dialer
+	c, err := d.DialContext(context.TODO(), "tcp", proxyAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dialing proxy %q failed: %v", proxyAddr, err)
+	}
+	fmt.Fprintf(c, "CONNECT %s/proxy HTTP/1.1\r\nHost: %s\r\n\r\n", addr, t.proxy.Hostname())
 	br := bufio.NewReader(c)
 	res, err := http.ReadResponse(br, nil)
-	log.Println("dialing proxy read response")
 	if err != nil {
-		log.Println("dialing proxy: error reading http response")
-		return nil, fmt.Errorf("reading HTTP response from %s failed: %v", t.address.Host, err)
+		return nil, fmt.Errorf("reading HTTP response from CONNECT to %s via proxy %s failed: %v",
+			addr, proxyAddr, err)
 	}
 	if res.StatusCode != 200 {
-		log.Println("dialing proxy: error http code", res.StatusCode)
-		return nil, fmt.Errorf(" HTTP response from %s status failed: %v", t.address.Host, res.Status)
+		return nil, fmt.Errorf("proxy error from %s while dialing %s: %v", proxyAddr, addr, res.Status)
 	}
 
 	// It's safe to discard the bufio.Reader here and return the
@@ -284,9 +285,8 @@ func (t *turnDialer) Dial(network string, addr string) (net.Conn, error) {
 	// no unbuffered data. But we can double-check.
 	if br.Buffered() > 0 {
 		return nil, fmt.Errorf("unexpected %d bytes of buffered data from CONNECT proxy %q",
-			br.Buffered(), t.address.Host)
+			br.Buffered(), proxyAddr)
 	}
-	log.Printf("dialing proxy %q succeeded", t.address.String())
 	return c, nil
 }
 
