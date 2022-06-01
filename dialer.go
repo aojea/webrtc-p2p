@@ -41,6 +41,7 @@ func NewDialer(id, remote string) (*Dialer, error) {
 
 	go func() {
 		for {
+			log.Println("connecting to the signal server", remote)
 			err := s.Run(d.donec)
 			if err != nil {
 				log.Printf("signaling client exited with error: %v\n", err)
