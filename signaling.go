@@ -328,6 +328,7 @@ func NewSignalClient(id string, signalServer string) (*SignalClient, error) {
 
 	ws := webrtc.SettingEngine{}
 	ws.DetachDataChannels()
+	ws.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeTCP4})
 	// Implementation specific, the signal server has embedded a TURN server
 	turnDialer := turnProxyDialer(*u, s.client)
 	ws.SetICEProxyDialer(turnDialer)
