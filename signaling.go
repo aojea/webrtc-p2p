@@ -313,7 +313,7 @@ type SignalClient struct {
 }
 
 func NewSignalClient(id string, signalServer string) (*SignalClient, error) {
-	u, err := url.Parse(signalServer)
+	_, err := url.Parse(signalServer)
 	if err != nil {
 		return nil, err
 	}
@@ -328,21 +328,25 @@ func NewSignalClient(id string, signalServer string) (*SignalClient, error) {
 
 	ws := webrtc.SettingEngine{}
 	ws.DetachDataChannels()
-	ws.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeTCP4})
+	// ws.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeTCP4})
 	// Implementation specific, the signal server has embedded a TURN server
-	turnDialer := turnProxyDialer(*u, s.client)
-	ws.SetICEProxyDialer(turnDialer)
+	// turnDialer := turnProxyDialer(*u, s.client)
+	// ws.SetICEProxyDialer(turnDialer)
 	s.api = webrtc.NewAPI(webrtc.WithSettingEngine(ws))
 	// Fake entry since we use the proxied server embedded in the signaling server
-	s.cfg = webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs:       []string{"turn:private.turn.local:3478?transport=tcp"},
-				Username:   turnUser,
-				Credential: turnSecret,
+	/*
+		s.cfg = webrtc.Configuration{
+			ICEServers: []webrtc.ICEServer{
+				{
+					URLs:       []string{"turn:private.turn.local:3478?transport=tcp"},
+					Username:   turnUser,
+					Credential: turnSecret,
+				},
 			},
-		},
-	}
+		}
+	*/
+	s.cfg = webrtc.Configuration{ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}}
+
 	return s, nil
 }
 
