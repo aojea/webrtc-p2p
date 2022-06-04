@@ -45,6 +45,7 @@ func main() {
 	defaultConfigFlags := genericclioptions.NewConfigFlags(true).WithDeprecatedPasswordFlag().WithDiscoveryBurst(300).WithDiscoveryQPS(50.0)
 	defaultConfigFlags.WrapConfigFn = func(c *rest.Config) *rest.Config {
 		c.Transport = tr
+		c.Dial = d.Dial
 		return c
 	}
 	command := cmd.NewDefaultKubectlCommandWithArgs(cmd.KubectlOptions{
