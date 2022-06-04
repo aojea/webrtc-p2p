@@ -99,8 +99,6 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(10*time.Second))
 	defer cancel()
-	// raw contains the data channel open
-	var raw io.ReadWriteCloser
 
 	incomingConn := make(chan net.Conn)
 	d.mu.Lock()
@@ -135,7 +133,6 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 			if s == webrtc.PeerConnectionStateFailed ||
 				s == webrtc.PeerConnectionStateDisconnected {
 				d.mu.Lock()
-				raw.Close()
 				peerConnection.Close()
 				delete(d.peers, target)
 				d.mu.Unlock()
@@ -171,12 +168,14 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 	dataChannel.OnOpen(func() {
 		log.Printf("Data channel '%s'-'%d' open.\n", dataChannel.Label(), dataChannel.ID())
 		// Detach the data channel
-		var dErr error
-		raw, dErr = dataChannel.Detach()
+		// raw contains the data channel open
+		raw, dErr := dataChannel.Detach()
 		if dErr != nil {
 			panic(dErr)
 		}
-		incomingConn <- rwconn.NewConn(raw, raw, rwconn.SetWriteDelay(500*time.Millisecond))
+		c := &peerClose{peer: peerConnection}
+		c.ReadWriteCloser = raw
+		incomingConn <- rwconn.NewConn(c, c, rwconn.SetWriteDelay(500*time.Millisecond))
 	})
 
 	// Create an offer to send to the browser
@@ -225,4 +224,15 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 		return nil, ctx.Err()
 	}
 
+}
+
+type peerClose struct {
+	io.ReadWriteCloser
+	peer *webrtc.PeerConnection
+	once sync.Once
+}
+
+func (p *peerClose) Close() error {
+	p.once.Do(func() { p.peer.Close() })
+	return nil
 }
