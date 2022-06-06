@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync"
@@ -173,9 +172,12 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 		if dErr != nil {
 			panic(dErr)
 		}
-		c := &peerClose{peer: peerConnection}
-		c.ReadWriteCloser = raw
-		incomingConn <- rwconn.NewConn(c, c, rwconn.SetWriteDelay(500*time.Millisecond))
+
+		closeFn := func() {
+			peerConnection.Close()
+		}
+
+		incomingConn <- rwconn.NewConn(raw, raw, rwconn.SetWriteDelay(500*time.Millisecond), rwconn.SetCloseHook(closeFn))
 	})
 
 	// Create an offer to send to the browser
@@ -224,15 +226,4 @@ func (d *Dialer) Dial(ctx context.Context, network string, address string) (net.
 		return nil, ctx.Err()
 	}
 
-}
-
-type peerClose struct {
-	io.ReadWriteCloser
-	peer *webrtc.PeerConnection
-	once sync.Once
-}
-
-func (p *peerClose) Close() error {
-	p.once.Do(func() { p.peer.Close() })
-	return nil
 }

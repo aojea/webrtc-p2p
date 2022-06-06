@@ -3,7 +3,7 @@ module github.com/pion/p2p
 go 1.17
 
 require (
-	github.com/aojea/rwconn v0.0.0-20220530164350-b6efff07b37e
+	github.com/aojea/rwconn v0.0.0-20220606112857-f375c5136c01
 	github.com/pion/turn/v2 v2.0.8
 	github.com/pion/webrtc/v3 v3.1.41
 	golang.org/x/net v0.0.0-20220425223048-2871e0cb64e4
