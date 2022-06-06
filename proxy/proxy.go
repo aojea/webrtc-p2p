@@ -1,14 +1,17 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"flag"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
 
 	// Import to initialize client auth plugins.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"golang.org/x/net/http2"
 
 	"github.com/pion/p2p"
 )
@@ -46,8 +49,17 @@ func main() {
 		panic(err)
 	}
 
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.DialContext = d.Dial
+	//tr := http.DefaultTransport.(*http.Transport).Clone()
+	//tr.DialContext = d.Dial
+
+	tr := &http2.Transport{
+		// So http2.Transport doesn't complain the URL scheme isn't 'https'
+		AllowHTTP: true,
+		// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
+		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+			return d.Dial(context.TODO(), network, addr)
+		},
+	}
 
 	target := &url.URL{Host: remoteID, Scheme: "http"}
 	proxy := httputil.NewSingleHostReverseProxy(target)
