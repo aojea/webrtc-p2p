@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kcp-webrtc-p2p
+  labels:
+    app: webrtc-p2p
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webrtc-p2p
+  template:
+    metadata:
+      labels:
+        app: webrtc-p2p
+    spec:
+      containers:
+      - name: server
+        image: quay.io/aojea/kcp:server
+        env:
+        - name:  SIGNAL_SERVER_URL
+          value: http://35.205.50.34:8080
